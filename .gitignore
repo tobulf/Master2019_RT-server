@@ -1,0 +1,13 @@
+#Ignore debug Folder
+**/Debug
+**/BUILD
+**/.vscode
+**/mbed-os
+**/.hg
+#Ignore Xml files:
+*.xml
+*.pyc
+*.py
+#ignore Projectfiles
+*.lib
+*.mbed
