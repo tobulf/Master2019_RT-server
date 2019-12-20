@@ -124,7 +124,7 @@ void SyncEpoch()
     watchdog.kick();
 }
 
-uint32_t synch_epoch = 1576860400;
+uint32_t synch_epoch = 1576861200;
 
 int main(void)
 {
@@ -149,16 +149,14 @@ int main(void)
     printf("Netmask: %s\r\n", netmask ? netmask : "None");
     printf("Gateway: %s\r\n\r\n", gateway ? gateway : "None");
     // Bind to listen on port.
-    bool synch = false;
     while (true)
     {   
         time_t now = time(NULL);
-        if (now == synch_epoch && !synch){
+        if (now%10==0 && now%100 == 0){
             synch_pin.write(1);
-            wait_ms(1);
+            wait_ms(1000);
             synch_pin.write(0);
             printf("Synched @ %u s\r\n", (unsigned int)now);
-            synch = true;
         }
         
         watchdog.kick();
