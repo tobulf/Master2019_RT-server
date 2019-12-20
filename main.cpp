@@ -22,6 +22,7 @@ using namespace std;
 
 Serial pc(USBTX, USBRX, 115200);
 InterruptIn button(PC_13);
+DigitalOut ouput_pin(PC_4);
 const uint8_t MAC[6] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x06};
 UipEthernet net(MAC, D11, D12, D13, D10); // mosi, miso, sck, cs
 TcpServer server;                         // Ethernet server
@@ -50,6 +51,8 @@ uint8_t uplink_GW_t;
 string uplink_port;
 string uplink_devEUI;
 string uplink_payload;
+
+uint32_t airtime;
 
 const int NTP_PACKET_SIZE = 48;
 uint8_t NTP_packetBuffer[NTP_PACKET_SIZE];
@@ -137,6 +140,8 @@ uint16_t getRTT(){
     return RTT_timer.read_high_resolution_us();
 };
 
+
+
 void parseJSON(Json* jsonOBJ){
     const char * payloadStart  = jsonOBJ->tokenAddress (2);
     int payloadLength = jsonOBJ->tokenLength (2);
@@ -189,18 +194,37 @@ void parseJSON(Json* jsonOBJ){
 
 };
 
-string createCallbackObject(uint64_t T_sync){
+uint32_t calculate_airtime(uint8_t payload_size, uint8_t SF, uint8_t CR){
+    double T_sym = pow(2,SF)/0.125;
+    double T_preamble = (8+4.25)*T_sym;
+    double upper_fraq = (8*payload_size) - (4*SF) + 44;
+    double lower_fraq;
+    if(SF > 10){
+        lower_fraq = 4*(SF-2); 
+    }
+    else{
+        lower_fraq = 4*SF; 
+    }
+    double payload_length = 8+((CR+4)*ceil((upper_fraq/lower_fraq)));
+    uint32_t T_tot =  (uint32_t)(T_preamble + (T_sym*payload_length));
+    return T_tot;
+}
+
+string createCallbackObject(uint64_t T_sync, uint32_t T_callback){
     string callbackMsg = 
     "{\"port\":"+uplink_port
     +",\"eui\":\""+uplink_devEUI
     +"\",\"payload\": ["
-    +to_string(((T_sync>>48) & 0xFF))+
-    ","+to_string(((T_sync>>40) & 0xFF))+
-    ","+to_string(((T_sync>>31) & 0xFF))+
-    ","+to_string(((T_sync>>24) & 0xFF))+
-    ","+to_string(((T_sync>>16) & 0xFF))+
-    ","+to_string(((T_sync>>8) & 0xFF))+
-    ","+to_string((T_sync & 0xFF))+"]} ";
+    +to_string((uint8_t)((T_sync>>48) & 0xFF))+
+    ","+to_string((uint8_t)((T_sync>>40) & 0xFF))+
+    ","+to_string((uint8_t)((T_sync>>32) & 0xFF))+
+    ","+to_string((uint8_t)((T_sync>>24) & 0xFF))+
+    ","+to_string((uint8_t)((T_sync>>16) & 0xFF))+
+    ","+to_string((uint8_t)((T_sync>>8) & 0xFF))+
+    ","+to_string((uint8_t)(T_sync & 0xFF))+
+    ","+to_string((uint8_t)((T_callback>>16) & 0xFF))+
+    ","+to_string((uint8_t)((T_callback>>8) & 0xFF))+
+    ","+to_string((uint8_t)(T_callback & 0xFF))+"]} ";
     return callbackMsg;
 };
 /**
@@ -212,9 +236,7 @@ string createCallbackObject(uint64_t T_sync){
 
 int main(void)
 {
-#ifdef DEBUG
     button.fall(&printfunc);
-#endif
     printf("Booting... \r\n");
     watchdog.start(5000);
     if (net.connect(30) != 0)
@@ -260,13 +282,16 @@ int main(void)
             string callbackJson;
             if(object.isValidJson()){
                 parseJSON(&object);
+                airtime = calculate_airtime(uplink_payload_size, uplink_DR, 1);
                 #ifdef DEBUG
-                printf("%d %.1f %s %s \r\n", 
+                printf("%d %d %s %s \r\n", 
                 uplink_DR, 
-                uplink_freq, 
+                uplink_payload_size, 
                 uplink_devEUI.c_str(), 
                 uplink_payload.c_str());
+                printf("Airtime: %ul \r\n", airtime);
                 #endif
+                
             }
             else{
                 Callback_timer.stop();
@@ -299,29 +324,31 @@ int main(void)
             socket.close();
             socket.begin(RX_RTT_port);
             while(!socket.parsePacket());
-            RTT_timer.stop();
-            uint64_t timestamp = RTC_us.read_high_resolution_us()
-            + epoch_us
-            - RTT_timer.read_high_resolution_us()
-            -((uint64_t)uplink_GW_t*1000);
-            callbackJson = createCallbackObject(timestamp);
-            #ifdef DEBUG
-            uint32_t temp_sec = timestamp / 1000000;
-            uint32_t temp_us = timestamp - ((uint64_t)temp_sec * 1000000);
-            printf("Time as seconds since January 1, 1970 = %u, us: %u \r\n",
-            (unsigned int)temp_sec, (unsigned int)temp_us);
-            printf("RTT: %d \r\n",RTT_timer.read_us());
-            #endif
-            RTT_timer.reset();
-            #endif
             socket.read(Downlink_packetBuffer, DOWNLINK_PACKET_SIZE);
             socket.flush();
             watchdog.kick();
+
+            RTT_timer.stop();
+            Callback_timer.stop();
+            uint64_t timestamp = RTC_us.read_high_resolution_us()
+            + epoch_us;
+            uint32_t T_callback = Callback_timer.read_high_resolution_us() + RTT_timer.read_high_resolution_us() + ((uint32_t)uplink_GW_t*1000) + airtime;
+            callbackJson = createCallbackObject(timestamp, T_callback);
+            //#ifdef DEBUG
+            uint32_t temp_sec = timestamp / 1000000;
+            uint32_t temp_us = timestamp - ((uint64_t)temp_sec * 1000000);
+            uint16_t temp_ms = temp_us/1000;
+            temp_us = temp_us - (uint32_t)temp_ms*1000;
+            printf("Seconds since January 1, 1970 = %u ms: %u us: %u \r\n",
+            (unsigned int)temp_sec, (unsigned int)temp_ms, (unsigned int)temp_us);
+            printf("RTT: %d \r\n",RTT_timer.read_us());
+            printf("Tot callback time: %u us\r\n", T_callback);
+            //#endif
+            RTT_timer.reset();
+            #endif
+            watchdog.kick();
             socket.beginPacket(HostIP, DL_port);
             socket.write((const uint8_t*) callbackJson.c_str(), callbackJson.length());
-            //socket.flush();
-            //socket.beginPacket(HostIP, DL_port);
-            //socket.write((const uint8_t*) callbackJson.c_str(), callbackJson.length());
             if(!socket.endPacket()){
                 printf("something went wrong sending UDP Uplink... \r\n");
                 Callback_timer.stop();
@@ -348,16 +375,19 @@ int main(void)
             Callback_timer.reset();
         };
         watchdog.kick();
-#ifdef DEBUG
         if (print_time)
         {
+            ouput_pin.write(1);
+    
             uint64_t temp = RTC_us.read_high_resolution_us() + epoch_us;
             uint32_t temp_sec = temp / 1000000;
             uint32_t temp_us = temp - ((uint64_t)temp_sec * 1000000);
-            printf("Time as seconds since January 1, 1970 = %u, us: %u \r\n",
+            printf("Seconds since January 1, 1970 = %u, us: %u \r\n",
                    (unsigned int)temp_sec, (unsigned int)temp_us);
+            wait_ms(10);
+            ouput_pin.write(0);
             print_time = false;
         };
-#endif   
+ 
     }
 }
