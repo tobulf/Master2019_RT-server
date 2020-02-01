@@ -22,7 +22,7 @@ using namespace std;
 
 Serial pc(USBTX, USBRX, 115200);
 InterruptIn button(PC_13);
-DigitalOut ouput_pin(PC_4);
+DigitalOut output_pin(PC_4);
 const uint8_t MAC[6] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x06};
 UipEthernet net(MAC, D11, D12, D13, D10); // mosi, miso, sck, cs
 TcpServer server;                         // Ethernet server
@@ -35,6 +35,7 @@ IpAddress timeServerIp(79, 160, 13, 250); // NTP server IP: 0.no.pool.ntp.org
 Timer RTC_us;
 Timer RTT_timer;
 Timer Callback_timer;
+Timer print_timer;
 
 bool print_time = false;
 uint64_t epoch_us;
@@ -56,7 +57,7 @@ uint32_t airtime;
 
 const int NTP_PACKET_SIZE = 48;
 uint8_t NTP_packetBuffer[NTP_PACKET_SIZE];
-const uint16_t DOWNLINK_PACKET_SIZE = 125;
+const uint16_t DOWNLINK_PACKET_SIZE = 136;
 uint8_t Downlink_packetBuffer[DOWNLINK_PACKET_SIZE];
 
 Watchdog &watchdog = Watchdog::get_instance();
@@ -71,7 +72,9 @@ void printfunc()
 void SyncEpoch()
 {
     bool sync = false;
+    #ifdef TESTING
     printf("sending NTP packet...\r\n");
+    #endif
     while (!sync)
     {
         watchdog.kick();
@@ -104,7 +107,9 @@ void SyncEpoch()
             {
                 t.stop();
                 waiting = false;
+                #ifdef TESTING
                 printf("Retrying NTP call... \r\n");
+                #endif
             }
         }
     }
@@ -118,7 +123,9 @@ void SyncEpoch()
     epoch_us = NTP_time;
     epoch_us = epoch_us * 1000000;
     RTC_us.start();
+    #ifdef TESTING
     printf("Time synched, Epoch: %ld \r\n", NTP_time);
+    #endif
     set_time(NTP_time);
     watchdog.kick();
 }
@@ -237,7 +244,9 @@ string createCallbackObject(uint64_t T_sync, uint32_t T_callback){
 int main(void)
 {
     button.fall(&printfunc);
+    #ifdef TESTING
     printf("Booting... \r\n");
+    #endif
     watchdog.start(5000);
     if (net.connect(30) != 0)
     { // 'connect' timeout in seconds (defaults to 60 sec)
@@ -245,28 +254,34 @@ int main(void)
     }
     net.set_network(IP, NETMASK, GATEWAY); // include this for using static IP address
     // Sync RTC with NTP-server.
+    #ifdef TESTING
     printf("Initializing ethernet...\r\n");
+    #endif
     // Show the network address
     const char *ip = net.get_ip_address();
     const char *netmask = net.get_netmask();
     const char *gateway = net.get_gateway();
 
     SyncEpoch();
-
+    #ifdef TESTING
     printf("IP address: %s\r\n", ip ? ip : "None");
     printf("Netmask: %s\r\n", netmask ? netmask : "None");
     printf("Gateway: %s\r\n\r\n", gateway ? gateway : "None");
     // Bind to listen on port.
+    #endif
     if(!socket.begin(UL_port)){
+        #ifdef TESTING
         printf("Socket not available... \r\n");
+        #endif
     };
+    #ifdef TESTING
     printf("Listening on UDP, port %u \r\n", UL_port);
     printf("------------------------------------------------------------------\r\n");
+    #endif
     IpAddress HostIP;
     while (true)
     {
         if(socket.parsePacket()){
-            
             Callback_timer.start();
             socket.read(Downlink_packetBuffer, DOWNLINK_PACKET_SIZE);
             HostIP = socket.remoteIP();
@@ -304,7 +319,7 @@ int main(void)
             }
             socket.flush();
             #ifdef RTT_CORRECTION
-            int garbadge_length = (DOWNLINK_PACKET_SIZE+callbackJson.length())/2;
+            int garbadge_length = (DOWNLINK_PACKET_SIZE+89)/2;
             uint8_t garbadge[garbadge_length];
             socket.beginPacket(HostIP, TX_RTT_port);
             socket.write((const uint8_t*)garbadge,garbadge_length);
@@ -339,10 +354,12 @@ int main(void)
             uint32_t temp_us = timestamp - ((uint64_t)temp_sec * 1000000);
             uint16_t temp_ms = temp_us/1000;
             temp_us = temp_us - (uint32_t)temp_ms*1000;
+            #ifdef TESTING
             printf("Seconds since January 1, 1970 = %u ms: %u us: %u \r\n",
             (unsigned int)temp_sec, (unsigned int)temp_ms, (unsigned int)temp_us);
             printf("RTT: %d \r\n",RTT_timer.read_us());
             printf("Tot callback time: %u us\r\n", T_callback);
+            #endif
             //#endif
             RTT_timer.reset();
             #endif
@@ -367,25 +384,32 @@ int main(void)
             #ifdef DEBUG
             printf("Callback time: %d us\r\n", Callback_timer.read_us());
             #endif
+            #ifdef TESTING
             char buffer[32];
             time_t seconds = time(NULL);
             strftime(buffer, 32, "%H:%M:%S %p\n", localtime(&seconds));
             printf("Uplink received from %s \r\n", uplink_devEUI.c_str());
             printf("Time GMT0: %s \r", buffer);
+            #endif
             Callback_timer.reset();
+            print_timer.start();
         };
         watchdog.kick();
-        if (print_time)
-        {
-            ouput_pin.write(1);
-    
+        if (print_time || print_timer.read() > 2){
+            if (output_pin.read()) {
+                output_pin.write(0);
+            }
+            else{
+                output_pin.write(1);
+            }
             uint64_t temp = RTC_us.read_high_resolution_us() + epoch_us;
+            print_timer.stop();
+            print_timer.reset();
             uint32_t temp_sec = temp / 1000000;
             uint32_t temp_us = temp - ((uint64_t)temp_sec * 1000000);
-            printf("Seconds since January 1, 1970 = %u, us: %u \r\n",
+            printf("%u, %u \r\n",
                    (unsigned int)temp_sec, (unsigned int)temp_us);
-            wait_ms(10);
-            ouput_pin.write(0);
+            
             print_time = false;
         };
  
