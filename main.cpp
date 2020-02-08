@@ -13,6 +13,7 @@ using namespace std;
 
 //#define DEBUG
 #define RTT_CORRECTION
+//#define TESTING
 // Static IP address must be unique and compatible with your network.
 #define IP "129.241.187.18"
 #define GATEWAY "129.241.187.1"
@@ -23,6 +24,7 @@ using namespace std;
 Serial pc(USBTX, USBRX, 115200);
 InterruptIn button(PC_13);
 DigitalOut output_pin(PC_4);
+AnalogIn AtmegaPin(PA_0);
 const uint8_t MAC[6] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x06};
 UipEthernet net(MAC, D11, D12, D13, D10); // mosi, miso, sck, cs
 TcpServer server;                         // Ethernet server
@@ -64,6 +66,7 @@ Watchdog &watchdog = Watchdog::get_instance();
 
 string callback_msg;
 
+bool sync = false;
 void printfunc()
 {
     print_time = true;
@@ -342,25 +345,22 @@ int main(void)
             socket.read(Downlink_packetBuffer, DOWNLINK_PACKET_SIZE);
             socket.flush();
             watchdog.kick();
-
             RTT_timer.stop();
             Callback_timer.stop();
             uint64_t timestamp = RTC_us.read_high_resolution_us()
             + epoch_us;
-            uint32_t T_callback = Callback_timer.read_high_resolution_us() + RTT_timer.read_high_resolution_us() + ((uint32_t)uplink_GW_t*1000) + airtime;
+            uint32_t T_callback = Callback_timer.read_high_resolution_us() + RTT_timer.read_high_resolution_us()/2 + ((uint32_t)uplink_GW_t*1000) + airtime;
             callbackJson = createCallbackObject(timestamp, T_callback);
-            //#ifdef DEBUG
+            #ifdef TESTING
             uint32_t temp_sec = timestamp / 1000000;
             uint32_t temp_us = timestamp - ((uint64_t)temp_sec * 1000000);
             uint16_t temp_ms = temp_us/1000;
             temp_us = temp_us - (uint32_t)temp_ms*1000;
-            #ifdef TESTING
             printf("Seconds since January 1, 1970 = %u ms: %u us: %u \r\n",
             (unsigned int)temp_sec, (unsigned int)temp_ms, (unsigned int)temp_us);
-            printf("RTT: %d \r\n",RTT_timer.read_us());
+            printf("RTT: %ul \r\n",RTT_timer.read_us()/2);
             printf("Tot callback time: %u us\r\n", T_callback);
             #endif
-            //#endif
             RTT_timer.reset();
             #endif
             watchdog.kick();
@@ -392,26 +392,31 @@ int main(void)
             printf("Time GMT0: %s \r", buffer);
             #endif
             Callback_timer.reset();
-            print_timer.start();
         };
         watchdog.kick();
-        if (print_time || print_timer.read() > 2){
-            if (output_pin.read()) {
-                output_pin.write(0);
+        if (print_time || AtmegaPin.read() > 0.3){
+            if(AtmegaPin.read() > 0.3 & !sync){
+                sync = true;
+                if (output_pin.read()) {
+                    output_pin.write(0);
+                }
+                else{
+                    output_pin.write(1);
+                }
+                uint64_t temp = RTC_us.read_high_resolution_us() + epoch_us;
+                uint32_t temp_sec = temp / 1000000;
+                uint32_t temp_us = temp - ((uint64_t)temp_sec * 1000000);
+                printf("%u, %u \r\n",
+                       (unsigned int)temp_sec, (unsigned int)temp_us);
+
+                print_time = false;
             }
             else{
-                output_pin.write(1);
+                print_time = false;
             }
-            uint64_t temp = RTC_us.read_high_resolution_us() + epoch_us;
-            print_timer.stop();
-            print_timer.reset();
-            uint32_t temp_sec = temp / 1000000;
-            uint32_t temp_us = temp - ((uint64_t)temp_sec * 1000000);
-            printf("%u, %u \r\n",
-                   (unsigned int)temp_sec, (unsigned int)temp_us);
-            
-            print_time = false;
-        };
- 
+        }
+        else{
+            sync = false;
+        }
     }
 }
